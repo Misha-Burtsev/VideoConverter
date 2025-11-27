@@ -2,7 +2,7 @@ import argparse
 import re
 from pathlib import Path
 
-from .converter import ConversionOptions, convert_files
+from .converter import ConversionOptions, convert_file
 
 # допустимые форматы выходного видео
 VALID_FORMATS = {"mp4", "avi", "mkv", "mov", "wmv"}
@@ -154,4 +154,4 @@ def main() -> None:
     print(f"[INFO] Директория вывода: {options.output_dir}")
     print(f"[INFO] Файлов к обработке: {len(existing_files)}")
 
-    convert_files(existing_files, options)
+    convert_file(existing_files, options)

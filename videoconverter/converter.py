@@ -1,37 +1,40 @@
 import subprocess
+import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional, Callable, Iterable
+
+# Регулярные выражения для чтения вывода FFmpeg (нужны для прогресс-бара)
+DURATION_REGEX = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})")
+TIME_REGEX = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})")
 
 
 @dataclass
 class ConversionOptions:
-    # параметры конвертации видео.
     target_format: str
     output_dir: Path
     video_bitrate: Optional[str] = None
     audio_bitrate: Optional[str] = None
     resolution: Optional[str] = None
+    fps: Optional[int] = None  # Добавил FPS, так как он есть в твоем макете GUI
 
 
 class ConversionError(Exception):
-    # ошибка при конвертации видеофайла.
     pass
 
 
 def build_ffmpeg_command(
-    input_file: Path,
-    output_file: Path,
-    options: ConversionOptions,
+        input_file: Path,
+        output_file: Path,
+        options: ConversionOptions,
 ) -> List[str]:
-    # формирует команду ffmpeg для конвертации одного файла.
     cmd: List[str] = [
         "ffmpeg",
-        "-y",              # перезаписывать существующий файл
-        "-i", str(input_file), # указывает, что следующий аргумент — это входной файл
+        "-y",
+        "-i", str(input_file),
     ]
 
-    # если options.video_bitrate не None, она добавляет "-b:v"(флаг битрейта видео) и само значение битрейта
     if options.video_bitrate:
         cmd.extend(["-b:v", options.video_bitrate])
 
@@ -41,58 +44,91 @@ def build_ffmpeg_command(
     if options.resolution:
         cmd.extend(["-s", options.resolution])
 
-    # выходной файл, добавляется путь
+    if options.fps:
+        cmd.extend(["-r", str(options.fps)])
+
     cmd.append(str(output_file))
     return cmd
 
 
-def convert_file(input_file: Path, options: ConversionOptions) -> None:     # конвертирует один файл с заданными параметрами.
+def get_video_duration(input_file: Path) -> float:
+    """
+    Новая функция: узнает длительность видео в секундах.
+    Нужна, чтобы рисовать полоску прогресса (вычислять %).
+    """
+    cmd = ["ffmpeg", "-i", str(input_file)]
+    try:
+        # Запускаем ffmpeg просто чтобы считать метаданные из stderr
+        result = subprocess.run(
+            cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
+        match = DURATION_REGEX.search(result.stderr)
+        if match:
+            hours, mins, secs, centis = map(int, match.groups())
+            return hours * 3600 + mins * 60 + secs + centis / 100.0
+    except Exception:
+        pass
+    return 1.0  # Возвращаем 1, чтобы избежать деления на ноль
+
+
+def convert_file(
+        input_file: Path,
+        options: ConversionOptions,
+        progress_callback: Optional[Callable[[int], None]] = None
+) -> None:
     if not input_file.exists():
         raise ConversionError(f"Файл не найден: {input_file}")
 
-    # input_file.stem берет имя файла без расширения
-    # options.target_format.lstrip('.') убирает точку из ".mp4"
     output_name = f"{input_file.stem}.{options.target_format.lstrip('.')}"
-    # с помощью pathlib "склеивает" папку вывода и новое имя файла
     output_file = options.output_dir / output_name
 
-    cmd = build_ffmpeg_command(input_file, output_file, options) # сборка команды для ffmpeg
+    cmd = build_ffmpeg_command(input_file, output_file, options)
+
+    # Получаем длительность для расчета процентов
+    total_duration = get_video_duration(input_file)
 
     print(f"[INFO] Конвертация: {input_file} -> {output_file}")
-    print(f"[DEBUG] Команда: {' '.join(cmd)}")
+
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.PIPE,  # FFmpeg пишет статус в stderr
             text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=creationflags
         )
-    except OSError as exc: # ловит ошибку, если ffmpeg вообще не найден в системе
-        # ffmpeg не найден или не запускается
+
+        # Читаем вывод построчно
+        while True:
+            line = process.stderr.readline()
+            if not line and process.poll() is not None:
+                break
+
+            if line and progress_callback:
+                # Ищем "time=00:00:05.12" в строке лога
+                match = TIME_REGEX.search(line)
+                if match:
+                    h, m, s, cs = map(int, match.groups())
+                    current_seconds = h * 3600 + m * 60 + s + cs / 100.0
+                    percent = int((current_seconds / total_duration) * 100)
+                    progress_callback(min(percent, 99))  # Обновляем GUI
+
+        if process.returncode != 0:
+            raise ConversionError(f"Ошибка FFmpeg (код {process.returncode})")
+
+        if progress_callback:
+            progress_callback(100)
+
+        print(f"[OK] Готово: {output_file}")
+
+    except OSError as exc:
         raise ConversionError(f"Не удалось запустить ffmpeg: {exc}") from exc
-
-    if result.returncode != 0:
-        # выводим stderr для диагностики
-        raise ConversionError(
-            f"ffmpeg завершился с ошибкой для файла {input_file}\n"
-            f"Код возврата: {result.returncode}\n"
-            f"stderr:\n{result.stderr}"
-        )
-
-    print(f"[OK] Готово: {output_file}")
-
-
-def convert_files(
-    inputs: Iterable[Path],
-    options: ConversionOptions,
-) -> None:
-    """
-    Конвертирует несколько файлов подряд.
-    Ошибки по отдельным файлам не прерывают обработку остальных.
-    """
-    for input_file in inputs:
-        try:
-            convert_file(input_file, options)
-        except ConversionError as exc:
-            print(f"[ERROR] {exc}")

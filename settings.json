@@ -1,0 +1,14 @@
+{
+    "output_path": "/home/mikhail/Рабочий стол/Сайт",
+    "hot_folder_enabled": true,
+    "hot_folder_path": "/home/mikhail/Рабочий стол/HotFolder",
+    "notifications_enabled": true,
+    "default_profile": {
+        "format": "mkv",
+        "video_codec": "hevc",
+        "audio_codec": "aac",
+        "resolution": "1280x720",
+        "bitrate": "20M",
+        "fps": 30
+    }
+}

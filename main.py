@@ -1,22 +1,22 @@
-
-import shutil
 import sys
-
+import shutil
 from videoconverter.cli import main as cli_main
+# Импортируем функцию запуска GUI (мы её добавим сейчас в __init__ или вызовем напрямую)
+from videoconverter.gui import run_gui
 
 
 def ensure_ffmpeg_installed() -> None:
-    """
-    Проверяет, что ffmpeg доступен в PATH.
-    Если нет — выводит понятное сообщение и завершает программу.
-    """
     if shutil.which("ffmpeg") is None:
         print("[ERROR] Утилита 'ffmpeg' не найдена в системе.")
-        print("Установите ffmpeg и убедитесь, что она доступна в PATH.")
-        print("Пример для Debian/Ubuntu: sudo apt install ffmpeg")
         sys.exit(1)
 
 
 if __name__ == "__main__":
     ensure_ffmpeg_installed()
-    cli_main()
+
+    # Если переданы аргументы (например: main.py video.mp4 -f mkv), запускаем CLI
+    if len(sys.argv) > 1:
+        cli_main()
+    else:
+        # Иначе запускаем графический интерфейс
+        run_gui()

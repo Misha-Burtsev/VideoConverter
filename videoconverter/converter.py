@@ -1,6 +1,9 @@
 import subprocess
 import re
 import sys
+import time
+import threading
+import psutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Callable, Iterable
@@ -17,7 +20,7 @@ class ConversionOptions:
     video_bitrate: Optional[str] = None
     audio_bitrate: Optional[str] = None
     resolution: Optional[str] = None
-    fps: Optional[int] = None  # Добавил FPS, так как он есть в твоем макете GUI
+    fps: Optional[int] = None
 
 
 class ConversionError(Exception):
@@ -52,10 +55,6 @@ def build_ffmpeg_command(
 
 
 def get_video_duration(input_file: Path) -> float:
-    """
-    Новая функция: узнает длительность видео в секундах.
-    Нужна, чтобы рисовать полоску прогресса (вычислять %).
-    """
     cmd = ["ffmpeg", "-i", str(input_file)]
     try:
         # Запускаем ffmpeg просто чтобы считать метаданные из stderr
@@ -79,56 +78,94 @@ def get_video_duration(input_file: Path) -> float:
 def convert_file(
         input_file: Path,
         options: ConversionOptions,
-        progress_callback: Optional[Callable[[int], None]] = None
+        progress_callback: Optional[Callable[[int], None]] = None,
+        pause_event: Optional[threading.Event] = None,
+        stop_event: Optional[threading.Event] = None
 ) -> None:
     if not input_file.exists():
         raise ConversionError(f"Файл не найден: {input_file}")
 
     output_name = f"{input_file.stem}.{options.target_format.lstrip('.')}"
     output_file = options.output_dir / output_name
-
     cmd = build_ffmpeg_command(input_file, output_file, options)
-
-    # Получаем длительность для расчета процентов
     total_duration = get_video_duration(input_file)
 
     print(f"[INFO] Конвертация: {input_file} -> {output_file}")
 
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
+    process = None
+    is_paused = False  # Флаг для отслеживания текущего состояния
+
     try:
         process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,  # FFmpeg пишет статус в stderr
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            creationflags=creationflags
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding='utf-8', errors='replace', creationflags=creationflags
         )
 
-        # Читаем вывод построчно
+        # Получаем объект процесса psutil для управления (пауза/продолжение)
+        p = psutil.Process(process.pid)
+
         while True:
+            # 1. СТОП
+            if stop_event and stop_event.is_set():
+                if is_paused: p.resume()  # Если был на паузе, надо "разбудить", чтобы убить
+                process.terminate()
+                raise ConversionError("STOPPED")
+
+            # 2. ПАУЗА (СИСТЕМНАЯ)
+            if pause_event and pause_event.is_set():
+                if not is_paused:
+                    # Ставим процесс на системную паузу
+                    p.suspend()
+                    is_paused = True
+
+                time.sleep(0.2)  # Просто ждем, пока флаг не снимут
+                continue
+            else:
+                # Если флаг сняли, а процесс все еще спит — будим
+                if is_paused:
+                    p.resume()
+                    is_paused = False
+
+            # Читаем вывод (только если не на паузе)
             line = process.stderr.readline()
             if not line and process.poll() is not None:
                 break
 
             if line and progress_callback:
-                # Ищем "time=00:00:05.12" в строке лога
                 match = TIME_REGEX.search(line)
                 if match:
                     h, m, s, cs = map(int, match.groups())
                     current_seconds = h * 3600 + m * 60 + s + cs / 100.0
                     percent = int((current_seconds / total_duration) * 100)
-                    progress_callback(min(percent, 99))  # Обновляем GUI
+                    progress_callback(min(percent, 99))
 
         if process.returncode != 0:
+            # Обработка ситуаций, когда процесс убили внешне
+            if stop_event and stop_event.is_set():
+                raise ConversionError("STOPPED")
             raise ConversionError(f"Ошибка FFmpeg (код {process.returncode})")
 
-        if progress_callback:
+        if progress_callback and not (stop_event and stop_event.is_set()):
             progress_callback(100)
-
-        print(f"[OK] Готово: {output_file}")
+            print(f"[OK] Готово: {output_file}")
 
     except OSError as exc:
         raise ConversionError(f"Не удалось запустить ffmpeg: {exc}") from exc
+    finally:
+        if process and process.poll() is None:
+            # На всякий случай
+            try:
+                process.terminate()
+            except:
+                pass
+
+
+# convert_files для CLI оставляем без изменений
+def convert_files(inputs: Iterable[Path], options: ConversionOptions) -> None:
+    for input_file in inputs:
+        try:
+            convert_file(input_file, options)
+        except ConversionError as exc:
+            print(f"[ERROR] {exc}")

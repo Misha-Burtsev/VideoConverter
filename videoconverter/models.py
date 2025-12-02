@@ -12,13 +12,10 @@ class JobState(Enum):
     PAUSED = "Пауза"
     DONE = "Завершено"
     FAILED = "Ошибка"
+    CANCELLED = "Отменено"
 
 @dataclass
 class FormatProfile:
-    """
-    Профиль настроек конвертации.
-    Поля соответствуют макету окна настроек.
-    """
     format: str = "mp4"
     video_codec: str = "h264"
     audio_codec: str = "aac"
@@ -28,10 +25,6 @@ class FormatProfile:
 
 @dataclass
 class Job:
-    """
-    Класс задачи на конвертацию.
-    Соответствует сущности Job из UML.
-    """
     source_path: Path
     output_dir: Path
     profile: FormatProfile
@@ -42,16 +35,12 @@ class Job:
 
     @property
     def output_filename(self) -> Path:
-        """Генерирует имя выходного файла."""
+        # Генерирует имя выходного файла.
         new_name = f"{self.source_path.stem}.{self.profile.format.lower()}"
         return self.output_dir / new_name
 
 @dataclass
 class Settings:
-    """
-    Класс для хранения и сохранения настроек приложения.
-    Реализует требования к сохранению параметров[cite: 161].
-    """
     output_path: str = str(Path.home() / "Videos")
     hot_folder_enabled: bool = False
     hot_folder_path: str = ""
